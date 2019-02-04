@@ -1,0 +1,126 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sriov-passthrough-cni-ns
+  labels:
+    name: sriov-passthrough-cni-ns
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: network-attachment-definitions.k8s.cni.cncf.io
+spec:
+  group: k8s.cni.cncf.io
+  version: v1
+  scope: Namespaced
+  names:
+    plural: network-attachment-definitions
+    singular: network-attachment-definition
+    kind: NetworkAttachmentDefinition
+    shortNames:
+    - net-attach-def
+  validation:
+    openAPIV3Schema:
+      properties:
+        spec:
+          properties:
+            config:
+              type: string
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: sriov-passthrough-cni
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+  - nonResourceURLs:
+      - '*'
+    verbs:
+      - '*'
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: sriov-passthrough-cni
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sriov-passthrough-cni
+subjects:
+- kind: ServiceAccount
+  name: sriov-passthrough-cni
+  namespace: sriov-passthrough-cni-ns
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sriov-passthrough-cni
+  namespace: sriov-passthrough-cni-ns
+---
+kind: SecurityContextConstraints
+apiVersion: v1
+metadata:
+  name: scc-admin
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowPrivilegedContainer: true
+users:
+  - system:serviceaccount:sriov-passthrough-cni-ns:sriov-passthrough-cni
+---
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: sriov-passthrough-cni
+  namespace: sriov-passthrough-cni-ns
+  labels:
+    tier: node
+    app: sriov-passthrough-cni
+spec:
+  template:
+    metadata:
+      labels:
+        tier: node
+        app: sriov-passthrough-cni
+    spec:
+      serviceAccountName: sriov-passthrough-cni
+      nodeSelector:
+        sriov-nic: 'true'
+      containers:
+        - name: kube-sriov-passthrough-cni
+          command: ["install-plugin"]
+          args: ["/host/opt/cni/bin", "/host/etc/cni/net.d"]
+          image: 'quay.io/pod_utils/sriov-passthrough-cni:v1.0'
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "50Mi"
+            limits:
+              cpu: "100m"
+              memory: "50Mi"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cni
+              mountPath: /host/etc/cni/net.d
+            - name: cnibin
+              mountPath: /host/opt/cni/bin
+      volumes:
+        - name: cni
+          hostPath:
+            path: /etc/cni/net.d
+        - name: cnibin
+          hostPath:
+            path: /opt/cni/bin

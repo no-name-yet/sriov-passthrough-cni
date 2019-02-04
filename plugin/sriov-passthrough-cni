@@ -9,16 +9,15 @@ readonly LOGFILE=/var/log/pfcni.log
 function main() {
     case "$CNI_COMMAND" in
         ADD)
-            log "CNI_ARGS: $CNI_ARGS"
+            log "Received ADD command. CNI_ARGS: $CNI_ARGS"
             setup_netns
-            add_veth_pair
+            # add_veth_pair
             setns_sriov_ifs
             gen_result_config
             ;;
         DELETE)
+            log "Received DELETE command."
             ip netns del "$CNI_CONTAINERID" ||:
-            ;;
-        *)
             ;;
     esac
 }
@@ -34,30 +33,27 @@ function setup_netns() {
 }
 
 function setns_sriov_ifs() {
-  # Move VFs to netns
   local sriov_vfs=( /sys/class/net/*/device/virtfn* )
-  local vf_ifs
+  local ifs_arr ifs_name
   for vf in "${sriov_vfs[@]}"; do
-    # Now we need to extract the ifs name
-    vf_ifs="$vf"/net/*
-    # Remove everything after /net/ including prefixing '/'
-    vf_ifs="${vf_ifs%%\/net\/*}"
-    vf_ifs="${vf_ifs##*\/}" # Remove everything until last '/'
-    log "Adding VF: $vf_ifs"
-    ip link set "$vf_ifs" netns "$CNI_CONTAINERID"
+    ifs_arr=( "$vf"/net/* )
+    for ifs in "${ifs_arr[@]}"; do
+        ifs_name="${ifs%%\/net\/*}"
+        ifs_name="${ifs##*\/}"
+        log "Adding vf: $ifs_name to netns $CNI_CONTAINERID"
+        ip link set "$ifs_name" netns "$CNI_CONTAINERID"
+    done
   done
 
-  # Move PFs to netns
   local sriov_pfs=( /sys/class/net/*/device/sriov_numvfs )
-  local pf
+  local ifs_name
   for ifs in "${sriov_pfs[@]}"; do
-    # Now we need to extract the ifs name
-    # Remove everything after /device/ including prefixing '/'
-    pf="${ifs%%\/device\/*}"
-    pf="${ifs##*\/}" # Remove everything until last '/'
-    log "Adding PF: $pf"
-    ip link set "$pf" netns "$CNI_CONTAINERID"
+    ifs_name="${ifs%%/device/*}"
+    ifs_name="${ifs_name##*/}"
+        log "Adding pf: $ifs_name to netns $CNI_CONTAINERID"
+    ip link set "$ifs_name" netns "$CNI_CONTAINERID"
   done
+
 }
 
 add_veth_pair() {
@@ -79,8 +75,8 @@ add_veth_pair() {
 function gen_result_config() {
   local mac
   mac="$(
-    ip netns exec demons ip link show "$CNI_IFNAME" | \
-        grep link| awk '{print $2}')"
+    ip netns exec "$CNI_CONTAINERID" ip link show "$CNI_IFNAME" | \
+        grep link | awk '{print $2}')"
 
   tee -a "$LOGFILE" <<-EOF
     {
@@ -95,7 +91,7 @@ function gen_result_config() {
         "ips": [
           {
             "version": "4",
-            "address": "$IP$SUBNET_MASK",
+            "address": "$IP/$SUBNET_MASK",
             "interface": 0
           }
         ]

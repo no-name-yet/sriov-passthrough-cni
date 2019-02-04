@@ -18,3 +18,4 @@ function install_plugin() {
 }
 
 install_plugin "$@"
+sleep infinity
