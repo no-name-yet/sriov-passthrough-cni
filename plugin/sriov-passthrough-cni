@@ -1,0 +1,110 @@
+#!/bin/bash
+
+readonly IP=169.255.0.0
+readonly SUBNET_MASK=24
+readonly GW_IP=169.255.0.1
+readonly CONTAINER_NETNS_LINK="/var/run/netns/$CNI_CONTAINERID"
+readonly LOGFILE=/var/log/pfcni.log
+
+function main() {
+    case "$CNI_COMMAND" in
+        ADD)
+            log "CNI_ARGS: $CNI_ARGS"
+            setup_netns
+            add_veth_pair
+            setns_sriov_ifs
+            gen_result_config
+            ;;
+        DELETE)
+            ip netns del "$CNI_CONTAINERID" ||:
+            ;;
+        *)
+            ;;
+    esac
+}
+
+function from_cni_args() {
+    local var_name="${1:?}"
+    sed -nE "s/.+?${var_name}=([^;]*?)(;.+?|$)/\1/p" <<< "$CNI_ARGS"
+}
+
+function setup_netns() {
+    mkdir -p /var/run/netns
+    ln -sfT "$CNI_NETNS" "$CONTAINER_NETNS_LINK"
+}
+
+function setns_sriov_ifs() {
+  # Move VFs to netns
+  local sriov_vfs=( /sys/class/net/*/device/virtfn* )
+  local vf_ifs
+  for vf in "${sriov_vfs[@]}"; do
+    # Now we need to extract the ifs name
+    vf_ifs="$vf"/net/*
+    # Remove everything after /net/ including prefixing '/'
+    vf_ifs="${vf_ifs%%\/net\/*}"
+    vf_ifs="${vf_ifs##*\/}" # Remove everything until last '/'
+    log "Adding VF: $vf_ifs"
+    ip link set "$vf_ifs" netns "$CNI_CONTAINERID"
+  done
+
+  # Move PFs to netns
+  local sriov_pfs=( /sys/class/net/*/device/sriov_numvfs )
+  local pf
+  for ifs in "${sriov_pfs[@]}"; do
+    # Now we need to extract the ifs name
+    # Remove everything after /device/ including prefixing '/'
+    pf="${ifs%%\/device\/*}"
+    pf="${ifs##*\/}" # Remove everything until last '/'
+    log "Adding PF: $pf"
+    ip link set "$pf" netns "$CNI_CONTAINERID"
+  done
+}
+
+add_veth_pair() {
+    local container_name
+    container_name="$(from_cni_args K8S_POD_NAME)"
+    local host_if="veth-1-${container_name}"
+    local container_if="veth-2-${container_name}"
+    ip link add "$container_if" type veth peer name "$host_if"
+    ip link set "$host_if" up
+    ip link set "$container_if" netns "$CNI_CONTAINERID"
+    ip netns exec "$CNI_CONTAINERID" ip link set "$container_if" down
+    ip netns exec "$CNI_CONTAINERID" ip link set "$container_if" name \
+        "$CNI_IFNAME"
+    ip netns exec "$CNI_CONTAINERID" ip link set "$container_if" up
+    ip netns exec "$CNI_CONTAINERID" ip addr add "$IP/$SUBNET_MASK" \
+        dev "$container_if"
+}
+
+function gen_result_config() {
+  local mac
+  mac="$(
+    ip netns exec demons ip link show "$CNI_IFNAME" | \
+        grep link| awk '{print $2}')"
+
+  tee -a "$LOGFILE" <<-EOF
+    {
+        "cniVersion": "0.3.1",
+        "interfaces": [
+          {
+            "name":"$CNI_IFNAME",
+            "mac": "$mac",
+            "sandbox": "$CNI_NETNS"
+          }
+        ],
+        "ips": [
+          {
+            "version": "4",
+            "address": "$IP$SUBNET_MASK",
+            "interface": 0
+          }
+        ]
+    }
+EOF
+}
+
+function log {
+    echo "[$(date --rfc-3339=seconds)]: $*" >> "$LOGFILE"
+}
+
+main "$@"
