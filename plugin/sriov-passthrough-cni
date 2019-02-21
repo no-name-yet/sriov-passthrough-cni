@@ -12,6 +12,7 @@ function main() {
             log "Received ADD command. CNI_ARGS: $CNI_ARGS"
             setup_netns
             # add_veth_pair
+            flip_vfs_to_default_drivers
             setns_sriov_ifs
             gen_result_config
             ;;
@@ -20,6 +21,16 @@ function main() {
             ip netns del "$CNI_CONTAINERID" ||:
             ;;
     esac
+}
+
+function flip_vfs_to_default_drivers() {
+    for file in $(find /sys/devices/ -name *sriov_totalvfs*); do
+        pfroot=$(dirname $file)
+
+        # flip all available VFs to default driver
+        echo 0 > $pfroot/sriov_numvfs
+        cat $file > $pfroot/sriov_numvfs
+    done
 }
 
 function from_cni_args() {
